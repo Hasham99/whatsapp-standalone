@@ -1,3 +1,6 @@
+// Load .env file if present (production secrets)
+try { require("fs").readFileSync(".env","utf8").split("\n").forEach(l=>{const[k,...v]=l.split("=");if(k&&v.length)process.env[k.trim()]=v.join("=").trim();}); } catch {}
+
 const express  = require("express");
 const http     = require("http");
 const { Server } = require("socket.io");
@@ -7,6 +10,12 @@ const path     = require("path");
 const fs       = require("fs");
 const crypto   = require("crypto");
 const { spawnSync } = require("child_process");
+const jwt      = require("jsonwebtoken");
+
+// Use env variable in production: JWT_SECRET=<strong-secret> node server.js
+const JWT_SECRET        = process.env.JWT_SECRET || "whatsapp-platform-secret-change-in-prod";
+const ACCESS_EXPIRES    = "1h";   // access token lifetime
+const REFRESH_EXPIRES   = "30d";  // refresh token lifetime
 
 const app    = express();
 const server = http.createServer(app);
@@ -23,10 +32,14 @@ function loadData() {
   if (fs.existsSync(DATA_FILE)) {
     try { db = JSON.parse(fs.readFileSync(DATA_FILE, "utf8")); } catch {}
   }
-  if (!Array.isArray(db.users))      db.users      = [];
-  if (!Array.isArray(db.apps))       db.apps       = [];
-  if (!Array.isArray(db.schedules))  db.schedules  = [];
-  if (!Array.isArray(db.recurring))  db.recurring  = [];
+  if (!Array.isArray(db.users))         db.users         = [];
+  if (!Array.isArray(db.apps))          db.apps          = [];
+  if (!Array.isArray(db.schedules))     db.schedules     = [];
+  if (!Array.isArray(db.recurring))     db.recurring     = [];
+  if (!Array.isArray(db.refreshTokens)) db.refreshTokens = [];
+  // Purge expired refresh tokens
+  const now = new Date();
+  db.refreshTokens = db.refreshTokens.filter(t => new Date(t.expiresAt) > now);
 
   // Seed default admin if no admin user exists
   if (!db.users.find(u => u.role === "admin")) {
@@ -48,8 +61,36 @@ function saveData() {
   fs.renameSync(tmp, DATA_FILE);
 }
 
-// ── Sessions (in-memory) ───────────────────────────────────────────────────────
-const sessions = new Map(); // token → { username, role }
+// ── JWT Helpers ────────────────────────────────────────────────────────────────
+function generateTokens(user) {
+  const jti = crypto.randomBytes(16).toString("hex");
+
+  const accessToken = jwt.sign(
+    { username: user.username, role: user.role, type: "access" },
+    JWT_SECRET,
+    { expiresIn: ACCESS_EXPIRES }
+  );
+  const refreshToken = jwt.sign(
+    { username: user.username, jti, type: "refresh" },
+    JWT_SECRET,
+    { expiresIn: REFRESH_EXPIRES }
+  );
+
+  if (!Array.isArray(db.refreshTokens)) db.refreshTokens = [];
+  db.refreshTokens.push({
+    jti,
+    username:  user.username,
+    expiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
+  });
+  saveData();
+  return { accessToken, refreshToken };
+}
+
+function verifyAccessToken(token) {
+  const payload = jwt.verify(token, JWT_SECRET);
+  if (payload.type !== "access") throw new Error("Not an access token");
+  return payload;
+}
 
 // ── WhatsApp Client Registry ───────────────────────────────────────────────────
 const clients = new Map(); // appId → { client, status, lastQR }
@@ -60,22 +101,32 @@ const recurringTimers = new Map(); // recurringId → timeoutHandle
 
 // ── Auth Helpers ───────────────────────────────────────────────────────────────
 function requireAuth(req, res, next) {
-  const token   = req.headers["x-auth-token"];
-  const session = sessions.get(token);
-  if (!session) return res.status(401).json({ error: "Unauthorized" });
-  req.username = session.username;
-  req.role     = session.role;
-  next();
+  const header = req.headers["x-auth-token"] || req.headers["authorization"];
+  const token  = header?.startsWith("Bearer ") ? header.slice(7) : header;
+  if (!token) return res.status(401).json({ error: "Unauthorized" });
+  try {
+    const payload = verifyAccessToken(token);
+    req.username  = payload.username;
+    req.role      = payload.role;
+    next();
+  } catch {
+    return res.status(401).json({ error: "Token expired or invalid" });
+  }
 }
 
 function requireAdmin(req, res, next) {
-  const token   = req.headers["x-auth-token"];
-  const session = sessions.get(token);
-  if (!session)                 return res.status(401).json({ error: "Unauthorized" });
-  if (session.role !== "admin") return res.status(403).json({ error: "Admin access required" });
-  req.username = session.username;
-  req.role     = session.role;
-  next();
+  const header = req.headers["x-auth-token"] || req.headers["authorization"];
+  const token  = header?.startsWith("Bearer ") ? header.slice(7) : header;
+  if (!token) return res.status(401).json({ error: "Unauthorized" });
+  try {
+    const payload = verifyAccessToken(token);
+    if (payload.role !== "admin") return res.status(403).json({ error: "Admin access required" });
+    req.username = payload.username;
+    req.role     = payload.role;
+    next();
+  } catch {
+    return res.status(401).json({ error: "Token expired or invalid" });
+  }
 }
 
 function requireApiKey(req, res, next) {
@@ -369,9 +420,30 @@ function scheduleMessage(sched) {
 io.on("connection", (socket) => {
   console.log(`🔌 Socket connected: ${socket.id}`);
 
+  // External apps (e.g. bookable) authenticate with their API key
+  socket.on("subscribe_external", ({ apiKey, appId }) => {
+    const waApp = db.apps.find(a => a.id === appId && a.apiKey === apiKey);
+    if (!waApp) { socket.emit("auth_error", { error: "Invalid API key" }); return; }
+
+    socket.join(`app:${appId}`);
+    const state  = clients.get(appId);
+    const status = state?.status || "DISCONNECTED";
+    socket.emit(`wa_status_${appId}`, { status, hasQR: !!(state?.lastQR) });
+    if (state?.lastQR) socket.emit(`wa_qr_${appId}`, { qr: state.lastQR });
+    if (status === "READY") {
+      const info = state.client.info;
+      socket.emit(`wa_ready_${appId}`, {
+        number: info?.wid?.user || "unknown",
+        name:   info?.pushname  || "WhatsApp",
+      });
+    }
+  });
+
   socket.on("subscribe", ({ token, appIds }) => {
-    const session = sessions.get(token);
-    if (!session) { socket.emit("auth_error", { error: "Bad token" }); return; }
+    let session;
+    try { session = verifyAccessToken(token); } catch {
+      socket.emit("auth_error", { error: "Bad token" }); return;
+    }
 
     for (const appId of (appIds || [])) {
       const waApp = db.apps.find(a =>
@@ -398,19 +470,46 @@ io.on("connection", (socket) => {
 // ── Auth Routes ────────────────────────────────────────────────────────────────
 app.post("/api/login", (req, res) => {
   const { username, password } = req.body;
-  // Accept login by username or email
   const user = db.users.find(u =>
     (u.username === username || u.email === username) && u.password === password
   );
   if (!user) return res.status(401).json({ error: "Invalid credentials" });
 
-  const token = crypto.randomBytes(32).toString("hex");
-  sessions.set(token, { username: user.username, role: user.role });
-  res.json({ token, username: user.username, name: user.name, role: user.role });
+  const { accessToken, refreshToken } = generateTokens(user);
+  res.json({ accessToken, refreshToken, username: user.username, name: user.name, role: user.role });
+});
+
+app.post("/api/auth/refresh", (req, res) => {
+  const { refreshToken } = req.body || {};
+  if (!refreshToken) return res.status(400).json({ error: "refreshToken required" });
+  try {
+    const payload = jwt.verify(refreshToken, JWT_SECRET);
+    if (payload.type !== "refresh") return res.status(401).json({ error: "Invalid token type" });
+
+    const stored = db.refreshTokens.find(t => t.jti === payload.jti && t.username === payload.username);
+    if (!stored) return res.status(401).json({ error: "Token revoked or not found" });
+
+    const user = db.users.find(u => u.username === payload.username);
+    if (!user) return res.status(401).json({ error: "User not found" });
+
+    // Rotate: remove old, issue new pair
+    db.refreshTokens = db.refreshTokens.filter(t => t.jti !== payload.jti);
+    const tokens = generateTokens(user);
+    res.json({ ...tokens, username: user.username, name: user.name, role: user.role });
+  } catch {
+    return res.status(401).json({ error: "Refresh token expired or invalid" });
+  }
 });
 
 app.post("/api/logout", requireAuth, (req, res) => {
-  sessions.delete(req.headers["x-auth-token"]);
+  const { refreshToken } = req.body || {};
+  if (refreshToken) {
+    try {
+      const payload = jwt.verify(refreshToken, JWT_SECRET, { ignoreExpiration: true });
+      db.refreshTokens = db.refreshTokens.filter(t => t.jti !== payload.jti);
+      saveData();
+    } catch {}
+  }
   res.json({ success: true });
 });
 
@@ -443,9 +542,8 @@ app.post("/api/signup", (req, res) => {
   db.users.push(newUser);
   saveData();
 
-  const token = crypto.randomBytes(32).toString("hex");
-  sessions.set(token, { username: newUser.username, role: newUser.role });
-  res.json({ token, username: newUser.username, name: newUser.name, role: newUser.role });
+  const { accessToken, refreshToken } = generateTokens(newUser);
+  res.json({ accessToken, refreshToken, username: newUser.username, name: newUser.name, role: newUser.role });
 });
 
 // ── Admin — User Management ────────────────────────────────────────────────────
@@ -784,6 +882,89 @@ app.delete("/api/apps/:appId/recurring/:recId", requireAuth, (req, res) => {
 });
 
 // ── External API Webhook ───────────────────────────────────────────────────────
+
+// Create a sub-slot for an admin user inside an app (returns a child appId + apiKey)
+// Body: { adminId: "unique-string-per-admin" }
+// Returns existing slot if adminId already registered under this app
+app.post("/webhook/:appId/slots", requireApiKey, (req, res) => {
+  const { adminId } = req.body;
+  if (!adminId?.toString().trim()) return res.status(400).json({ error: "adminId required" });
+
+  const parentApp = req.waApp;
+  const slotName  = `${parentApp.name}__${String(adminId).trim()}`;
+
+  // Return existing slot if already created
+  const existing = db.apps.find(a => a.parentAppId === parentApp.id && a.adminId === String(adminId).trim());
+  if (existing) {
+    return res.json({
+      slotId:  existing.id,
+      apiKey:  existing.apiKey,
+      adminId: existing.adminId,
+      status:  clients.get(existing.id)?.status || "DISCONNECTED",
+    });
+  }
+
+  const slot = {
+    id:          crypto.randomBytes(4).toString("hex"),
+    name:        slotName,
+    owner:       parentApp.owner,
+    parentAppId: parentApp.id,
+    adminId:     String(adminId).trim(),
+    apiKey:      "sk-" + crypto.randomBytes(24).toString("hex"),
+    createdAt:   new Date().toISOString(),
+  };
+  db.apps.push(slot);
+  saveData();
+  res.json({
+    slotId:  slot.id,
+    apiKey:  slot.apiKey,
+    adminId: slot.adminId,
+    status:  "DISCONNECTED",
+  });
+});
+
+// List all slots created under a parent app
+app.get("/webhook/:appId/slots", requireApiKey, (req, res) => {
+  const slots = db.apps
+    .filter(a => a.parentAppId === req.waApp.id)
+    .map(a => ({
+      slotId:    a.id,
+      adminId:   a.adminId,
+      status:    clients.get(a.id)?.status || "DISCONNECTED",
+      createdAt: a.createdAt,
+    }));
+  res.json(slots);
+});
+
+// Delete a slot
+app.delete("/webhook/:appId/slots/:slotId", requireApiKey, async (req, res) => {
+  const slot = db.apps.find(a => a.id === req.params.slotId && a.parentAppId === req.waApp.id);
+  if (!slot) return res.status(404).json({ error: "Slot not found" });
+
+  const state = clients.get(slot.id);
+  if (state?.client) {
+    try { await state.client.destroy(); } catch {}
+    clients.delete(slot.id);
+  }
+  const authPath = path.join(__dirname, ".wwebjs_auth", `session-${slot.id}`);
+  if (fs.existsSync(authPath)) fs.rmSync(authPath, { recursive: true, force: true });
+
+  db.apps      = db.apps.filter(a => a.id !== slot.id);
+  db.schedules = db.schedules.filter(s => s.appId !== slot.id);
+  db.recurring = db.recurring.filter(r => r.appId !== slot.id);
+  saveData();
+  res.json({ success: true });
+});
+
+// Allow an external app to trigger WhatsApp init (start QR process) via API key
+app.post("/webhook/:appId/init", requireApiKey, (req, res) => {
+  const state = clients.get(req.waApp.id);
+  if (state?.status === "READY")        return res.json({ success: true, status: "ALREADY_READY" });
+  if (state?.status === "INITIALIZING") return res.json({ success: true, status: "INITIALIZING" });
+  createWhatsAppClient(req.waApp);
+  res.json({ success: true, status: "INITIALIZING" });
+});
+
 app.post("/webhook/:appId/send", requireApiKey, async (req, res) => {
   const { number, message } = req.body;
   if (!number || !message) return res.status(400).json({ error: "number and message required" });

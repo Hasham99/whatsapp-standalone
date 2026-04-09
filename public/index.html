@@ -587,24 +587,46 @@
   const socket = io();
 
   // ── State ──────────────────────────────────────────────────────────────────
-  let authToken   = localStorage.getItem("wa_token");
-  let currentUser = null;
+  let authToken    = localStorage.getItem("wa_token");
+  let refreshToken = localStorage.getItem("wa_refresh");
+  let currentUser  = null;
   let apps        = [];
   let activeAppId = null;
   let activeTab   = "send";
   let appListeners = {};
 
-  // ── Fetch Helper ───────────────────────────────────────────────────────────
-  async function api(url, opts = {}) {
+  // ── Fetch Helper (auto-refreshes access token on 401) ─────────────────────
+  async function api(url, opts = {}, _retried = false) {
     const res = await fetch(url, {
       ...opts,
       headers: {
-        "Content-Type":  "application/json",
-        "x-auth-token":  authToken || "",
+        "Content-Type": "application/json",
+        "x-auth-token": authToken || "",
         ...(opts.headers || {}),
       },
       body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
     });
+
+    if (res.status === 401 && !_retried && refreshToken) {
+      // Attempt silent refresh
+      const rr = await fetch("/api/auth/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refreshToken }),
+      });
+      if (rr.ok) {
+        const data   = await rr.json();
+        authToken    = data.accessToken;
+        refreshToken = data.refreshToken;
+        currentUser  = { ...currentUser, ...data };
+        localStorage.setItem("wa_token",    data.accessToken);
+        localStorage.setItem("wa_refresh",  data.refreshToken);
+        localStorage.setItem("wa_user_str", JSON.stringify(currentUser));
+        return api(url, opts, true);  // retry once with new token
+      }
+      forceLogout(); return null;
+    }
+
     if (res.status === 401) { forceLogout(); return null; }
     return res;
   }
@@ -620,9 +642,11 @@
     const data = await res.json();
     if (!res.ok) { errEl.textContent = data.error || "Login failed"; errEl.classList.remove("hidden"); return; }
 
-    authToken   = data.token;
-    currentUser = data;
-    localStorage.setItem("wa_token",    data.token);
+    authToken    = data.accessToken;
+    refreshToken = data.refreshToken;
+    currentUser  = data;
+    localStorage.setItem("wa_token",    data.accessToken);
+    localStorage.setItem("wa_refresh",  data.refreshToken);
     localStorage.setItem("wa_user_str", JSON.stringify(data));
     errEl.classList.add("hidden");
     showDashboard();
@@ -640,9 +664,11 @@
     const data = await res.json();
     if (!res.ok) { errEl.textContent = data.error || "Signup failed"; errEl.classList.remove("hidden"); return; }
 
-    authToken   = data.token;
-    currentUser = data;
-    localStorage.setItem("wa_token",    data.token);
+    authToken    = data.accessToken;
+    refreshToken = data.refreshToken;
+    currentUser  = data;
+    localStorage.setItem("wa_token",    data.accessToken);
+    localStorage.setItem("wa_refresh",  data.refreshToken);
     localStorage.setItem("wa_user_str", JSON.stringify(data));
     errEl.classList.add("hidden");
     showDashboard();
@@ -650,13 +676,14 @@
 
   async function doLogout() {
     if (!confirm("Sign out?")) return;
-    await api("/api/logout", { method: "POST" });
+    await api("/api/logout", { method: "POST", body: { refreshToken } });
     forceLogout();
   }
 
   function forceLogout() {
-    authToken = null; currentUser = null;
+    authToken = null; refreshToken = null; currentUser = null;
     localStorage.removeItem("wa_token");
+    localStorage.removeItem("wa_refresh");
     localStorage.removeItem("wa_user_str");
     unsubscribeActive();
     showLogin();
