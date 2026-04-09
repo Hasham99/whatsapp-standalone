@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# WhatsApp session files (device auth — never commit these)
+.wwebjs_auth/
+.wwebjs_cache/
+
+# Runtime data file (contains API keys, passwords, user data)
+data.json
+data.json.tmp
+
+# Environment variables
+.env
+.env.*
+
+# Logs
+*.log
+npm-debug.log*
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/

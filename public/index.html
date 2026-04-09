@@ -1,0 +1,1347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WhatsApp Platform</title>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --green:   #25d366;
+      --green-d: #128c7e;
+      --red:     #e53935;
+      --blue:    #1976d2;
+      --bg:      #f0f2f5;
+      --card:    #fff;
+      --border:  #e5e7eb;
+      --text:    #111827;
+      --muted:   #6b7280;
+      --sidebar: #1f2937;
+    }
+
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+    .hidden { display: none !important; }
+
+    /* ── Auth pages ────────────────────────────────────────────── */
+    .auth-wrap {
+      min-height: 100vh; display: flex; align-items: center;
+      justify-content: center; padding: 24px;
+      background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%);
+    }
+    .auth-card {
+      background: #fff; border-radius: 20px; padding: 40px 36px 32px;
+      width: 100%; max-width: 420px; box-shadow: 0 20px 60px rgba(0,0,0,.35);
+    }
+    .auth-logo  { font-size: 40px; text-align: center; margin-bottom: 10px; }
+    .auth-card h1 { font-size: 22px; font-weight: 700; text-align: center; margin-bottom: 4px; }
+    .auth-sub   { font-size: 13px; color: var(--muted); text-align: center; margin-bottom: 24px; }
+    .auth-switch { text-align: center; font-size: 13px; color: var(--muted); margin-top: 16px; }
+    .auth-switch a { color: var(--green-d); font-weight: 600; cursor: pointer; text-decoration: none; }
+
+    /* ── Dashboard layout ──────────────────────────────────────── */
+    #v-dash { display: flex; flex-direction: column; height: 100vh; }
+
+    .app-header {
+      height: 54px; background: var(--green-d); color: #fff;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 20px; flex-shrink: 0; z-index: 10;
+    }
+    .header-brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 16px; }
+    .header-logo  { font-size: 22px; }
+    .header-user  { display: flex; align-items: center; gap: 12px; font-size: 13px; }
+    .role-badge   { background: rgba(255,255,255,.2); padding: 2px 10px; border-radius: 99px; font-size: 11px; font-weight: 700; letter-spacing: .04em; }
+
+    .layout { display: flex; flex: 1; overflow: hidden; }
+
+    /* ── Sidebar ───────────────────────────────────────────────── */
+    .sidebar { width: 240px; min-width: 240px; background: var(--sidebar); color: #e5e7eb; display: flex; flex-direction: column; overflow: hidden; }
+    .sidebar-hd { display: flex; align-items: center; justify-content: space-between; padding: 16px 14px 10px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: #9ca3af; flex-shrink: 0; }
+    .sidebar-nav { border-bottom: 1px solid rgba(255,255,255,.07); padding: 6px 8px; flex-shrink: 0; }
+    .sidebar-nav-item { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500; color: #d1d5db; transition: background .15s; }
+    .sidebar-nav-item:hover  { background: rgba(255,255,255,.07); }
+    .sidebar-nav-item.active { background: rgba(255,255,255,.12); color: #fff; }
+    #app-list { flex: 1; overflow-y: auto; padding: 4px 8px 12px; }
+    .app-item { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 8px; cursor: pointer; transition: background .15s; }
+    .app-item:hover  { background: rgba(255,255,255,.07); }
+    .app-item.active { background: rgba(255,255,255,.12); }
+    .app-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .app-dot.disconnected { background: #6b7280; }
+    .app-dot.initializing { background: #f59e0b; }
+    .app-dot.ready        { background: #22c55e; }
+    .app-item-info { overflow: hidden; }
+    .app-item-name   { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .app-item-status { font-size: 11px; color: #9ca3af; margin-top: 1px; }
+    .app-item-owner  { font-size: 10px; color: #6b7280; }
+    .sidebar-empty   { padding: 20px 10px; font-size: 12px; color: #6b7280; text-align: center; line-height: 1.6; }
+
+    /* ── Main Panel ────────────────────────────────────────────── */
+    .main-panel { flex: 1; overflow-y: auto; padding: 28px; display: flex; flex-direction: column; }
+    .empty-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--muted); text-align: center; }
+    .empty-state-icon { font-size: 52px; opacity: .5; }
+    .empty-state p { font-size: 15px; line-height: 1.6; }
+
+    /* ── App Detail ────────────────────────────────────────────── */
+    #detail { max-width: 720px; width: 100%; }
+    .detail-hd { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+    .detail-hd-left { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .detail-hd h2 { font-size: 22px; font-weight: 700; }
+    .detail-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+    /* ── QR ────────────────────────────────────────────────────── */
+    .qr-card { background: #fff; border: 1.5px solid var(--border); border-radius: 14px; padding: 22px 24px; margin-bottom: 16px; display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
+    .qr-instructions { font-size: 13px; color: #374151; line-height: 1.7; }
+    .qr-instructions strong { color: var(--text); }
+    #qr-wrap { width: 180px; height: 180px; border: 2px solid #e5e7eb; border-radius: 10px; display: flex; align-items: center; justify-content: center; background: #fafafa; overflow: hidden; flex-shrink: 0; }
+    #qr-wrap img { width: 180px; height: 180px; object-fit: contain; }
+    .qr-spinner-txt { font-size: 12px; color: #9ca3af; }
+
+    .connected-info { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 10px; padding: 12px 16px; font-size: 14px; color: #166534; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+
+    /* ── Badges ────────────────────────────────────────────────── */
+    .badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 99px; }
+    .badge::before { content:""; width:6px; height:6px; border-radius:50%; background:currentColor; }
+    .badge.disconnected { background: #f3f4f6; color: #6b7280; }
+    .badge.initializing { background: #fffbeb; color: #d97706; }
+    .badge.ready        { background: #f0fdf4; color: #16a34a; }
+    .badge-active { background: #f0fdf4; color: #15803d; }
+    .badge-paused { background: #fef9c3; color: #854d0e; }
+    .badge-admin  { background: #ede9fe; color: #6d28d9; }
+    .badge-user   { background: #e0f2fe; color: #0369a1; }
+
+    /* ── Tabs ──────────────────────────────────────────────────── */
+    .tabs { display: flex; border-bottom: 2px solid var(--border); margin-bottom: 20px; gap: 4px; flex-wrap: wrap; }
+    .tab { background: none; border: none; padding: 10px 16px; font-size: 14px; font-weight: 500; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -2px; transition: color .15s, border-color .15s; }
+    .tab:hover  { color: var(--text); }
+    .tab.active { color: var(--green-d); border-bottom-color: var(--green-d); font-weight: 600; }
+    .tab-panel  { animation: fadeIn .15s ease; }
+    @keyframes fadeIn { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:none; } }
+
+    /* ── Forms ─────────────────────────────────────────────────── */
+    .form-group { margin-bottom: 16px; }
+    .form-row   { display: flex; gap: 12px; }
+    .form-row .form-group { flex: 1; }
+    label { display: block; font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 6px; }
+    label .hint { font-weight: 400; color: #9ca3af; margin-left: 4px; font-size: 12px; }
+    input[type="text"], input[type="password"], input[type="email"],
+    input[type="number"], input[type="datetime-local"], textarea, .sel-input {
+      width: 100%; border: 1.5px solid var(--border); border-radius: 8px;
+      padding: 9px 12px; font-size: 14px; outline: none; transition: border-color .2s;
+      background: #fff; resize: vertical; font-family: inherit; cursor: auto;
+    }
+    input:focus, textarea:focus, .sel-input:focus { border-color: var(--green); }
+    .sel-input { cursor: pointer; }
+
+    /* ── Buttons ───────────────────────────────────────────────── */
+    .btn { border: none; border-radius: 8px; padding: 9px 18px; font-size: 13px; font-weight: 600; cursor: pointer; transition: opacity .15s, transform .1s; display: inline-flex; align-items: center; gap: 6px; }
+    .btn:disabled { opacity: .45; cursor: not-allowed; }
+    .btn:hover:not(:disabled) { opacity: .88; }
+    .btn:active:not(:disabled) { transform: scale(.97); }
+    .btn-primary { background: var(--green);   color: #fff; }
+    .btn-green   { background: var(--green);   color: #fff; }
+    .btn-red     { background: var(--red);     color: #fff; }
+    .btn-blue    { background: var(--blue);    color: #fff; }
+    .btn-ghost   { background: #f3f4f6;        color: #374151; }
+    .btn-danger  { background: #fef2f2;        color: var(--red); border: 1px solid #fecaca; }
+    .btn-purple  { background: #ede9fe;        color: #6d28d9; }
+    .btn-sm      { padding: 6px 12px; font-size: 12px; }
+    .w-full      { width: 100%; justify-content: center; padding-top: 11px; padding-bottom: 11px; }
+
+    /* ── Card ──────────────────────────────────────────────────── */
+    .card { background: #fff; border: 1.5px solid var(--border); border-radius: 14px; padding: 22px 24px; margin-bottom: 16px; }
+
+    /* ── API Info ──────────────────────────────────────────────── */
+    .api-block { margin-bottom: 20px; }
+    .api-label { font-size: 12px; font-weight: 700; text-transform: uppercase; color: var(--muted); letter-spacing: .06em; margin-bottom: 6px; }
+    .api-code-row { display: flex; align-items: stretch; border: 1.5px solid var(--border); border-radius: 8px; overflow: hidden; }
+    .api-code-row code, .api-code-row pre { flex: 1; padding: 10px 12px; font-family: "SF Mono", "Fira Code", monospace; font-size: 12px; background: #f8fafc; word-break: break-all; white-space: pre-wrap; line-height: 1.6; }
+    .copy-btn { background: #f1f5f9; border: none; border-left: 1.5px solid var(--border); padding: 0 14px; font-size: 12px; font-weight: 600; color: #475569; cursor: pointer; flex-shrink: 0; transition: background .15s; }
+    .copy-btn:hover { background: #e2e8f0; }
+
+    /* ── Scheduled list ────────────────────────────────────────── */
+    .sched-list-hd { font-size: 13px; font-weight: 700; color: var(--text); margin: 24px 0 10px; }
+    .sched-item { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; background: #fff; border: 1.5px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 8px; }
+    .sched-item-body { flex: 1; min-width: 0; }
+    .sched-num  { font-size: 13px; font-weight: 600; color: #374151; }
+    .sched-msg  { font-size: 13px; color: var(--muted); margin: 3px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sched-time { font-size: 12px; color: #6b7280; }
+    .sched-status { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 99px; white-space: nowrap; }
+    .sched-status.pending { background: #eff6ff; color: #1d4ed8; }
+    .sched-status.sent    { background: #f0fdf4; color: #15803d; }
+    .sched-status.failed  { background: #fef2f2; color: #b91c1c; }
+    .sched-status.expired { background: #f3f4f6; color: #6b7280; }
+
+    /* ── Recurring list ────────────────────────────────────────── */
+    .rec-item { border: 1.5px solid var(--border); border-radius: 12px; margin-bottom: 12px; overflow: hidden; }
+    .rec-item-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; background: #f8fafc; gap: 10px; flex-wrap: wrap; }
+    .rec-item-title { font-size: 13px; font-weight: 700; color: var(--text); }
+    .rec-item-freq  { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .rec-item-next  { font-size: 11px; color: #6b7280; margin-top: 2px; }
+    .rec-item-actions { display: flex; gap: 6px; flex-shrink: 0; }
+    .rec-recipients { padding: 10px 14px; border-top: 1px solid var(--border); }
+    .rec-recipient-row { display: flex; align-items: flex-start; gap: 8px; padding: 5px 0; border-bottom: 1px solid #f1f5f9; font-size: 13px; }
+    .rec-recipient-row:last-child { border-bottom: none; }
+    .rec-rec-num { font-weight: 600; color: #374151; white-space: nowrap; }
+    .rec-rec-msg { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    .rec-logs    { padding: 0 14px 12px; }
+    .rec-log-hd  { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 10px 0 6px; cursor: pointer; display: flex; align-items: center; gap: 4px; }
+    .rec-log-entry { font-size: 11px; background: #f8fafc; border-radius: 6px; padding: 5px 8px; margin-bottom: 4px; line-height: 1.6; }
+    .rec-log-ok   { color: #15803d; }
+    .rec-log-fail { color: #b91c1c; }
+    .rec-log-time { color: #6b7280; margin-bottom: 2px; }
+
+    /* ── Admin Panel ───────────────────────────────────────────── */
+    #v-admin { max-width: 860px; width: 100%; }
+    .admin-hd { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+    .admin-hd h2 { font-size: 22px; font-weight: 700; }
+    .users-table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 12px; overflow: hidden; border: 1.5px solid var(--border); }
+    .users-table th { background: #f8fafc; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); padding: 12px 14px; text-align: left; border-bottom: 1.5px solid var(--border); }
+    .users-table td { padding: 12px 14px; font-size: 13px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
+    .users-table tr:last-child td { border-bottom: none; }
+    .users-table tr:hover td { background: #fafafa; }
+    .td-actions { display: flex; gap: 6px; }
+
+    /* ── Modal ─────────────────────────────────────────────────── */
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 24px; }
+    .modal-card { background: #fff; border-radius: 16px; padding: 28px 28px 24px; width: 100%; max-width: 400px; box-shadow: 0 20px 60px rgba(0,0,0,.3); }
+    .modal-card.wide { max-width: 520px; max-height: 90vh; overflow-y: auto; }
+    .modal-card h3 { font-size: 17px; font-weight: 700; margin-bottom: 18px; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+
+    /* ── Error / misc ──────────────────────────────────────────── */
+    .error-msg { font-size: 13px; color: var(--red); margin-top: 12px; text-align: center; }
+    .section-title { font-size: 15px; font-weight: 700; margin-bottom: 14px; }
+
+    /* ── Toast ─────────────────────────────────────────────────── */
+    #toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px); background: #1f2937; color: #fff; padding: 11px 22px; border-radius: 8px; font-size: 13px; font-weight: 500; opacity: 0; transition: all .25s ease; pointer-events: none; z-index: 999; white-space: nowrap; }
+    #toast.show    { opacity: 1; transform: translateX(-50%) translateY(0); }
+    #toast.success { background: #166534; }
+    #toast.error   { background: #991b1b; }
+
+    /* ── Scrollbar ─────────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 99px; }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════ LOGIN ═════════════════════════════════════ -->
+<div id="v-login" class="auth-wrap">
+  <div class="auth-card">
+    <div class="auth-logo">💬</div>
+    <h1>WhatsApp Platform</h1>
+    <p class="auth-sub">Sign in to manage your apps</p>
+    <div class="form-group">
+      <label>Username or Email</label>
+      <input type="text" id="inp-user" placeholder="Enter username or email"
+             onkeydown="if(event.key==='Enter')doLogin()" autocomplete="username" />
+    </div>
+    <div class="form-group" style="margin-bottom:0">
+      <label>Password</label>
+      <input type="password" id="inp-pass" placeholder="Enter password"
+             onkeydown="if(event.key==='Enter')doLogin()" autocomplete="current-password" />
+    </div>
+    <p id="login-err" class="error-msg hidden"></p>
+    <button class="btn btn-primary w-full" style="margin-top:20px" onclick="doLogin()">Sign In</button>
+    <p class="auth-switch">Don't have an account? <a onclick="showSignup()">Sign up</a></p>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════ SIGNUP ════════════════════════════════════ -->
+<div id="v-signup" class="auth-wrap hidden">
+  <div class="auth-card">
+    <div class="auth-logo">💬</div>
+    <h1>Create Account</h1>
+    <p class="auth-sub">Join the WhatsApp Platform</p>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Full Name</label>
+        <input type="text" id="su-name" placeholder="Your name" />
+      </div>
+      <div class="form-group">
+        <label>Username</label>
+        <input type="text" id="su-user" placeholder="username" />
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Email</label>
+      <input type="email" id="su-email" placeholder="you@example.com" />
+    </div>
+    <div class="form-group" style="margin-bottom:0">
+      <label>Password</label>
+      <input type="password" id="su-pass" placeholder="Choose a password"
+             onkeydown="if(event.key==='Enter')doSignup()" />
+    </div>
+    <p id="signup-err" class="error-msg hidden"></p>
+    <button class="btn btn-primary w-full" style="margin-top:20px" onclick="doSignup()">Create Account</button>
+    <p class="auth-switch">Already have an account? <a onclick="showLogin()">Sign in</a></p>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════ DASHBOARD ════════════════════════════════ -->
+<div id="v-dash" class="hidden">
+  <header class="app-header">
+    <div class="header-brand">
+      <span class="header-logo">💬</span>
+      WhatsApp Platform
+    </div>
+    <div class="header-user">
+      <span id="hdr-name" style="opacity:.8"></span>
+      <span id="hdr-role" class="role-badge"></span>
+      <button class="btn btn-sm btn-ghost" onclick="doLogout()">Sign out</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <!-- Admin nav -->
+      <div id="admin-nav" class="sidebar-nav hidden">
+        <div class="sidebar-nav-item" id="nav-apps" onclick="showAppsView()">📱 My Apps</div>
+        <div class="sidebar-nav-item" id="nav-admin" onclick="showAdminView()">👥 User Management</div>
+      </div>
+      <div class="sidebar-hd">
+        <span id="sidebar-title">My Apps</span>
+        <button class="btn btn-sm btn-primary" onclick="showNewApp()">+ New</button>
+      </div>
+      <div id="app-list"></div>
+    </aside>
+
+    <!-- Main -->
+    <main class="main-panel">
+      <!-- Empty state -->
+      <div id="empty-state" class="empty-state">
+        <div class="empty-state-icon">📱</div>
+        <p>Select an app from the sidebar<br>or create a new one to get started.</p>
+      </div>
+
+      <!-- App detail -->
+      <div id="detail" class="hidden">
+        <div class="detail-hd">
+          <div class="detail-hd-left">
+            <h2 id="det-name"></h2>
+            <span id="det-badge" class="badge disconnected">Disconnected</span>
+            <span id="det-owner" style="font-size:12px;color:var(--muted)"></span>
+          </div>
+          <div class="detail-actions">
+            <button id="btn-wa-connect"    class="btn btn-green"       onclick="connectApp()">Connect WhatsApp</button>
+            <button id="btn-wa-disconnect" class="btn btn-red hidden"  onclick="disconnectApp()">Disconnect</button>
+            <button class="btn btn-danger"                             onclick="deleteApp()">Delete App</button>
+          </div>
+        </div>
+
+        <div id="qr-section" class="qr-card hidden">
+          <div class="qr-instructions">
+            Open WhatsApp on your phone:<br>
+            <strong>Linked Devices → Link a Device</strong><br>
+            then scan the QR code on the right.
+          </div>
+          <div id="qr-wrap">
+            <span class="qr-spinner-txt" id="qr-spinner">Generating…</span>
+          </div>
+        </div>
+
+        <div id="connected-info" class="connected-info hidden">
+          ✅ Connected as <strong id="connected-num">—</strong>
+        </div>
+
+        <div class="tabs">
+          <button class="tab active" data-tab="send"      onclick="switchTab(this)">Send Message</button>
+          <button class="tab"        data-tab="schedule"  onclick="switchTab(this)">One-time Schedule</button>
+          <button class="tab"        data-tab="recurring" onclick="switchTab(this)">Recurring</button>
+          <button class="tab"        data-tab="api"       onclick="switchTab(this)">API Info</button>
+        </div>
+
+        <!-- Send tab -->
+        <div id="tab-send" class="tab-panel">
+          <div class="card" style="margin-bottom:0">
+            <p style="font-size:12px;color:#6b7280;margin-bottom:16px;background:#f0fdf4;border-radius:8px;padding:8px 12px;border:1px solid #bbf7d0;">
+              📌 Messages will be prefixed with the app name, e.g. <strong style="color:#166534">[AppName]</strong>
+            </p>
+            <div class="form-group">
+              <label>Phone Number <span class="hint">(with country code, no + or spaces)</span></label>
+              <input type="text" id="send-num" placeholder="e.g. 923001234567" />
+            </div>
+            <div class="form-group" style="margin-bottom:16px">
+              <label>Message</label>
+              <textarea id="send-msg" rows="4" placeholder="Type your message…"></textarea>
+            </div>
+            <button class="btn btn-primary w-full" id="btn-send" onclick="sendNow()">Send Message</button>
+          </div>
+        </div>
+
+        <!-- Schedule tab -->
+        <div id="tab-schedule" class="tab-panel hidden">
+          <div class="card">
+            <div class="form-group">
+              <label>Phone Number <span class="hint">(with country code, no + or spaces)</span></label>
+              <input type="text" id="sched-num" placeholder="e.g. 923001234567" />
+            </div>
+            <div class="form-group">
+              <label>Message</label>
+              <textarea id="sched-msg" rows="3" placeholder="Type your message…"></textarea>
+            </div>
+            <div class="form-group" style="margin-bottom:16px">
+              <label>Send At <span class="hint">Pakistan Standard Time (UTC+5)</span></label>
+              <input type="datetime-local" id="sched-dt" />
+            </div>
+            <button class="btn btn-primary w-full" onclick="scheduleMsg()">Schedule Message</button>
+          </div>
+          <div class="sched-list-hd">Scheduled Messages</div>
+          <div id="sched-list"></div>
+        </div>
+
+        <!-- Recurring tab -->
+        <div id="tab-recurring" class="tab-panel hidden">
+          <div class="card">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+              <span style="font-size:15px;font-weight:700">Recurring Schedules</span>
+              <button type="button" class="btn btn-primary btn-sm" onclick="showRecurringModal()">+ New Recurring</button>
+            </div>
+            <div id="rec-list"><p style="font-size:13px;color:#9ca3af">No recurring schedules yet.</p></div>
+          </div>
+        </div>
+
+        <!-- API tab -->
+        <div id="tab-api" class="tab-panel hidden">
+          <div class="card">
+            <p style="font-size:13px;color:#374151;margin-bottom:20px;line-height:1.6;">
+              Use the endpoint below to send WhatsApp messages from any external application.
+              Authenticate with your <strong>API Key</strong> in the
+              <code style="background:#f1f5f9;padding:1px 5px;border-radius:4px;font-size:12px;">x-api-key</code> header.
+            </p>
+            <div class="api-block">
+              <div class="api-label">Endpoint</div>
+              <div class="api-code-row"><code id="api-endpoint"></code><button class="copy-btn" onclick="copyEl('api-endpoint')">Copy</button></div>
+            </div>
+            <div class="api-block">
+              <div class="api-label">API Key</div>
+              <div class="api-code-row"><code id="api-key"></code><button class="copy-btn" onclick="copyEl('api-key')">Copy</button></div>
+            </div>
+            <div class="api-block" style="margin-bottom:0">
+              <div class="api-label">curl Example</div>
+              <div class="api-code-row" style="align-items:flex-start">
+                <pre id="api-curl"></pre>
+                <button class="copy-btn" style="padding-top:10px" onclick="copyEl('api-curl')">Copy</button>
+              </div>
+            </div>
+          </div>
+          <div class="card" style="background:#fffbeb;border-color:#fde68a">
+            <p style="font-size:13px;color:#92400e;line-height:1.7;">
+              <strong>Request format:</strong><br>
+              Method: <code style="background:#fef3c7;padding:1px 5px;border-radius:4px;font-size:12px;">POST</code><br>
+              Header: <code style="background:#fef3c7;padding:1px 5px;border-radius:4px;font-size:12px;">Content-Type: application/json</code><br>
+              Body: <code style="background:#fef3c7;padding:1px 5px;border-radius:4px;font-size:12px;">{"number":"923001234567","message":"Hello!"}</code>
+            </p>
+          </div>
+        </div>
+      </div><!-- /detail -->
+
+      <!-- Admin panel -->
+      <div id="v-admin" class="hidden">
+        <div class="admin-hd">
+          <h2>👥 User Management</h2>
+          <button class="btn btn-primary" onclick="showUserModal()">+ Add User</button>
+        </div>
+        <div class="card" style="padding:0;overflow:hidden">
+          <table class="users-table">
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Email</th>
+                <th>Role</th>
+                <th>Apps</th>
+                <th>Created</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="users-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+    </main>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════ MODALS ═══════════════════════════════════ -->
+
+<!-- New App -->
+<div id="modal-new" class="modal-overlay hidden" onclick="onModalOverlay(event,'modal-new')">
+  <div class="modal-card">
+    <h3>Create New App</h3>
+    <div class="form-group" style="margin-bottom:0">
+      <label>App Name</label>
+      <input type="text" id="new-app-name" placeholder="e.g. My Shop, Sales Bot"
+             onkeydown="if(event.key==='Enter')createApp()" />
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="hideModal('modal-new')">Cancel</button>
+      <button class="btn btn-primary" onclick="createApp()">Create App</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add/Edit User (admin) -->
+<div id="modal-user" class="modal-overlay hidden" onclick="onModalOverlay(event,'modal-user')">
+  <div class="modal-card">
+    <h3 id="user-modal-title">Add User</h3>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Full Name</label>
+        <input type="text" id="um-name" placeholder="Full name" />
+      </div>
+      <div class="form-group">
+        <label>Username</label>
+        <input type="text" id="um-user" placeholder="username" />
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Email</label>
+      <input type="email" id="um-email" placeholder="email@example.com" />
+    </div>
+    <div class="form-group">
+      <label id="um-pass-label">Password</label>
+      <input type="password" id="um-pass" placeholder="Set password" />
+    </div>
+    <div class="form-group" style="margin-bottom:0">
+      <label>Role</label>
+      <select id="um-role" class="sel-input">
+        <option value="user">User</option>
+        <option value="admin">Admin</option>
+      </select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="hideModal('modal-user')">Cancel</button>
+      <button class="btn btn-primary" id="um-save-btn" onclick="saveUser()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Recurring -->
+<div id="modal-rec" class="modal-overlay hidden" onclick="onModalOverlay(event,'modal-rec')">
+  <div class="modal-card wide">
+    <h3 id="rec-modal-title">New Recurring Schedule</h3>
+    <div class="form-group">
+      <label>Frequency</label>
+      <select id="rec-freq" class="sel-input" onchange="onFreqChange()">
+        <option value="every_n_minutes">Every N minutes</option>
+        <option value="hourly">Every hour</option>
+        <option value="daily">Daily (fixed time)</option>
+        <option value="weekly">Weekly (fixed day &amp; time)</option>
+      </select>
+    </div>
+    <div id="rec-interval-row" class="form-group">
+      <label>Interval <span class="hint">(minutes)</span></label>
+      <input type="number" id="rec-interval" min="1" max="1440" value="30" class="sel-input" />
+    </div>
+    <div id="rec-time-row" class="form-group hidden">
+      <label>Time <span class="hint">(Pakistan Standard Time)</span></label>
+      <div style="display:flex;gap:8px;align-items:center">
+        <select id="rec-hour"   class="sel-input" style="width:90px"></select>
+        <span style="font-size:14px;color:#6b7280">:</span>
+        <select id="rec-minute" class="sel-input" style="width:90px"></select>
+        <select id="rec-ampm"   class="sel-input" style="width:80px">
+          <option value="AM">AM</option>
+          <option value="PM">PM</option>
+        </select>
+      </div>
+    </div>
+    <div id="rec-weekday-row" class="form-group hidden">
+      <label>Day of week</label>
+      <select id="rec-weekday" class="sel-input">
+        <option value="0">Sunday</option><option value="1">Monday</option>
+        <option value="2">Tuesday</option><option value="3">Wednesday</option>
+        <option value="4">Thursday</option><option value="5">Friday</option>
+        <option value="6">Saturday</option>
+      </select>
+    </div>
+    <div id="rec-window-row" class="form-group">
+      <label>Active window <span class="hint">(PKT — messages only sent in this range)</span></label>
+      <div style="display:flex;gap:8px;align-items:center">
+        <select id="rec-win-start" class="sel-input"></select>
+        <span style="font-size:13px;color:#6b7280">to</span>
+        <select id="rec-win-end" class="sel-input"></select>
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Recipients
+        <span class="hint">(one per row — <code style="font-size:11px">923001234567 | Your message</code>)</span>
+      </label>
+      <textarea id="rec-recipients" rows="5"
+        placeholder="923001234567 | Hello, daily reminder!&#10;923009876543 | Good morning!"></textarea>
+      <p style="font-size:11px;color:#9ca3af;margin-top:4px">Separate number and message with <strong>|</strong>. One per line.</p>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" onclick="hideModal('modal-rec')">Cancel</button>
+      <button type="button" class="btn btn-primary" id="rec-save-btn" onclick="saveRecurring()">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+  const socket = io();
+
+  // ── State ──────────────────────────────────────────────────────────────────
+  let authToken   = localStorage.getItem("wa_token");
+  let currentUser = null;
+  let apps        = [];
+  let activeAppId = null;
+  let activeTab   = "send";
+  let appListeners = {};
+
+  // ── Fetch Helper ───────────────────────────────────────────────────────────
+  async function api(url, opts = {}) {
+    const res = await fetch(url, {
+      ...opts,
+      headers: {
+        "Content-Type":  "application/json",
+        "x-auth-token":  authToken || "",
+        ...(opts.headers || {}),
+      },
+      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+    });
+    if (res.status === 401) { forceLogout(); return null; }
+    return res;
+  }
+
+  // ── Auth ───────────────────────────────────────────────────────────────────
+  async function doLogin() {
+    const username = document.getElementById("inp-user").value.trim();
+    const password = document.getElementById("inp-pass").value;
+    const errEl    = document.getElementById("login-err");
+    if (!username || !password) { errEl.textContent = "Enter username and password"; errEl.classList.remove("hidden"); return; }
+
+    const res  = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password }) });
+    const data = await res.json();
+    if (!res.ok) { errEl.textContent = data.error || "Login failed"; errEl.classList.remove("hidden"); return; }
+
+    authToken   = data.token;
+    currentUser = data;
+    localStorage.setItem("wa_token",    data.token);
+    localStorage.setItem("wa_user_str", JSON.stringify(data));
+    errEl.classList.add("hidden");
+    showDashboard();
+  }
+
+  async function doSignup() {
+    const name     = document.getElementById("su-name").value.trim();
+    const username = document.getElementById("su-user").value.trim();
+    const email    = document.getElementById("su-email").value.trim();
+    const password = document.getElementById("su-pass").value;
+    const errEl    = document.getElementById("signup-err");
+    if (!name || !username || !email || !password) { errEl.textContent = "All fields required"; errEl.classList.remove("hidden"); return; }
+
+    const res  = await fetch("/api/signup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, username, email, password }) });
+    const data = await res.json();
+    if (!res.ok) { errEl.textContent = data.error || "Signup failed"; errEl.classList.remove("hidden"); return; }
+
+    authToken   = data.token;
+    currentUser = data;
+    localStorage.setItem("wa_token",    data.token);
+    localStorage.setItem("wa_user_str", JSON.stringify(data));
+    errEl.classList.add("hidden");
+    showDashboard();
+  }
+
+  async function doLogout() {
+    if (!confirm("Sign out?")) return;
+    await api("/api/logout", { method: "POST" });
+    forceLogout();
+  }
+
+  function forceLogout() {
+    authToken = null; currentUser = null;
+    localStorage.removeItem("wa_token");
+    localStorage.removeItem("wa_user_str");
+    unsubscribeActive();
+    showLogin();
+  }
+
+  // ── Views ──────────────────────────────────────────────────────────────────
+  function showLogin() {
+    document.getElementById("v-login").classList.remove("hidden");
+    document.getElementById("v-signup").classList.add("hidden");
+    document.getElementById("v-dash").classList.add("hidden");
+  }
+  function showSignup() {
+    document.getElementById("v-signup").classList.remove("hidden");
+    document.getElementById("v-login").classList.add("hidden");
+  }
+
+  function showDashboard() {
+    document.getElementById("v-login").classList.add("hidden");
+    document.getElementById("v-signup").classList.add("hidden");
+    document.getElementById("v-dash").classList.remove("hidden");
+    document.getElementById("hdr-name").textContent = currentUser.name || currentUser.username;
+    document.getElementById("hdr-role").textContent = currentUser.role === "admin" ? "ADMIN" : "USER";
+
+    if (currentUser.role === "admin") {
+      document.getElementById("admin-nav").classList.remove("hidden");
+    }
+    loadApps();
+  }
+
+  function showAppsView() {
+    document.getElementById("v-admin").classList.add("hidden");
+    document.getElementById("empty-state").classList.remove("hidden");
+    document.getElementById("detail").classList.add("hidden");
+    document.getElementById("sidebar-title").textContent = "All Apps";
+    document.getElementById("nav-apps").classList.add("active");
+    document.getElementById("nav-admin").classList.remove("active");
+    renderSidebar();
+  }
+
+  function showAdminView() {
+    document.getElementById("empty-state").classList.add("hidden");
+    document.getElementById("detail").classList.add("hidden");
+    document.getElementById("v-admin").classList.remove("hidden");
+    document.getElementById("nav-admin").classList.add("active");
+    document.getElementById("nav-apps").classList.remove("active");
+    loadUsers();
+  }
+
+  // ── Apps ───────────────────────────────────────────────────────────────────
+  async function loadApps() {
+    const res = await api("/api/apps");
+    if (!res) return;
+    apps = await res.json();
+    renderSidebar();
+    socket.emit("subscribe", { token: authToken, appIds: apps.map(a => a.id) });
+    if (activeAppId) {
+      const found = apps.find(a => a.id === activeAppId);
+      if (found) renderDetail(found); else closeDetail();
+    }
+  }
+
+  function showNewApp() {
+    document.getElementById("new-app-name").value = "";
+    document.getElementById("modal-new").classList.remove("hidden");
+    setTimeout(() => document.getElementById("new-app-name").focus(), 50);
+  }
+
+  async function createApp() {
+    const name = document.getElementById("new-app-name").value.trim();
+    if (!name) { toast("Enter an app name", "error"); return; }
+    const res  = await api("/api/apps", { method: "POST", body: { name } });
+    if (!res) return;
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || "Failed", "error"); return; }
+    hideModal("modal-new");
+    toast(`App "${name}" created!`, "success");
+    apps.push(data);
+    renderSidebar();
+    socket.emit("subscribe", { token: authToken, appIds: [data.id] });
+    openApp(data.id);
+    const apiTab = document.querySelector('.tab[data-tab="api"]');
+    if (apiTab) switchTab(apiTab);
+  }
+
+  async function deleteApp() {
+    if (!activeAppId) return;
+    const waApp = apps.find(a => a.id === activeAppId);
+    if (!confirm(`Delete "${waApp?.name}"? This will disconnect WhatsApp and remove all settings.`)) return;
+    const res = await api(`/api/apps/${activeAppId}`, { method: "DELETE" });
+    if (!res) return;
+    if (!res.ok) { toast("Delete failed", "error"); return; }
+    toast("App deleted", "success");
+    apps = apps.filter(a => a.id !== activeAppId);
+    activeAppId = null;
+    unsubscribeActive();
+    renderSidebar();
+    closeDetail();
+  }
+
+  // ── App Detail ─────────────────────────────────────────────────────────────
+  function openApp(appId) {
+    activeAppId = appId;
+    unsubscribeActive();
+    // Hide admin panel if open
+    document.getElementById("v-admin").classList.add("hidden");
+    const waApp = apps.find(a => a.id === appId);
+    if (!waApp) return;
+    renderDetail(waApp);
+    subscribeApp(appId);
+    if (activeTab === "schedule")  loadSchedules(appId);
+    if (activeTab === "recurring") loadRecurring(appId);
+    document.querySelectorAll(".app-item").forEach(el =>
+      el.classList.toggle("active", el.dataset.id === appId)
+    );
+  }
+
+  function closeDetail() {
+    document.getElementById("empty-state").classList.remove("hidden");
+    document.getElementById("detail").classList.add("hidden");
+    document.querySelectorAll(".app-item").forEach(el => el.classList.remove("active"));
+  }
+
+  function renderDetail(waApp) {
+    document.getElementById("empty-state").classList.add("hidden");
+    document.getElementById("detail").classList.remove("hidden");
+    document.getElementById("det-name").textContent = waApp.name;
+    const ownerEl = document.getElementById("det-owner");
+    if (currentUser.role === "admin" && waApp.ownerName) {
+      ownerEl.textContent = `Owner: ${waApp.ownerName}`;
+    } else {
+      ownerEl.textContent = "";
+    }
+    const origin = window.location.origin;
+    document.getElementById("api-endpoint").textContent = `${origin}/webhook/${waApp.id}/send`;
+    document.getElementById("api-key").textContent      = waApp.apiKey;
+    document.getElementById("api-curl").textContent =
+`curl -X POST ${origin}/webhook/${waApp.id}/send \\
+  -H "Content-Type: application/json" \\
+  -H "x-api-key: ${waApp.apiKey}" \\
+  -d '{"number":"923001234567","message":"Hello!"}'`;
+    updateStatus(waApp.id, waApp.status || "DISCONNECTED", null);
+  }
+
+  function updateStatus(appId, status, number) {
+    const sideItem = document.querySelector(`.app-item[data-id="${appId}"]`);
+    if (sideItem) {
+      const dot = sideItem.querySelector(".app-dot");
+      const lbl = sideItem.querySelector(".app-item-status");
+      if (dot) dot.className = "app-dot " + status.toLowerCase();
+      if (lbl) lbl.textContent = statusLabel(status);
+    }
+    const a = apps.find(x => x.id === appId);
+    if (a) a.status = status;
+    if (activeAppId !== appId) return;
+
+    const badge      = document.getElementById("det-badge");
+    const btnConn    = document.getElementById("btn-wa-connect");
+    const btnDisconn = document.getElementById("btn-wa-disconnect");
+    const qrSec      = document.getElementById("qr-section");
+    const connInfo   = document.getElementById("connected-info");
+
+    badge.className   = "badge " + status.toLowerCase();
+    badge.textContent = statusLabel(status);
+
+    if (status === "DISCONNECTED") {
+      btnConn.classList.remove("hidden"); btnDisconn.classList.add("hidden");
+      qrSec.classList.add("hidden"); connInfo.classList.add("hidden");
+    } else if (status === "INITIALIZING") {
+      btnConn.classList.add("hidden"); btnDisconn.classList.remove("hidden");
+      qrSec.classList.remove("hidden"); connInfo.classList.add("hidden");
+    } else if (status === "READY") {
+      btnConn.classList.add("hidden"); btnDisconn.classList.remove("hidden");
+      qrSec.classList.add("hidden"); connInfo.classList.remove("hidden");
+      if (number) document.getElementById("connected-num").textContent = `+${number}`;
+    }
+  }
+
+  // ── WhatsApp ───────────────────────────────────────────────────────────────
+  async function connectApp() {
+    if (!activeAppId) return;
+    const res = await api(`/api/apps/${activeAppId}/init`, { method: "POST" });
+    if (!res) return;
+    if (res.ok) updateStatus(activeAppId, "INITIALIZING", null);
+    else toast("Failed to connect", "error");
+  }
+
+  async function disconnectApp() {
+    if (!activeAppId) return;
+    if (!confirm("Disconnect WhatsApp? You will need to scan QR again next time.")) return;
+    const res = await api(`/api/apps/${activeAppId}/logout`, { method: "POST" });
+    if (!res) return;
+    if (res.ok) { updateStatus(activeAppId, "DISCONNECTED", null); toast("Disconnected", "success"); }
+    else toast("Failed to disconnect", "error");
+  }
+
+  // ── Send ───────────────────────────────────────────────────────────────────
+  async function sendNow() {
+    const number  = document.getElementById("send-num").value.trim();
+    const message = document.getElementById("send-msg").value.trim();
+    if (!number)  return toast("Enter a phone number", "error");
+    if (!message) return toast("Enter a message", "error");
+    const btn = document.getElementById("btn-send");
+    btn.disabled = true; btn.textContent = "Sending…";
+    const res  = await api(`/api/apps/${activeAppId}/send`, { method: "POST", body: { number, message } });
+    btn.disabled = false; btn.textContent = "Send Message";
+    if (!res) return;
+    const data = await res.json();
+    if (data?.success) { toast("Message sent!", "success"); document.getElementById("send-msg").value = ""; }
+    else toast(data?.error || "Send failed", "error");
+  }
+
+  // ── Schedule ───────────────────────────────────────────────────────────────
+  async function scheduleMsg() {
+    const number = document.getElementById("sched-num").value.trim();
+    const msg    = document.getElementById("sched-msg").value.trim();
+    const dt     = document.getElementById("sched-dt").value;
+    if (!number) return toast("Enter a phone number", "error");
+    if (!msg)    return toast("Enter a message", "error");
+    if (!dt)     return toast("Select a date and time (PKT)", "error");
+    const res  = await api(`/api/apps/${activeAppId}/schedules`, { method: "POST", body: { number, message: msg, scheduledTime: dt } });
+    if (!res) return;
+    const data = await res.json();
+    if (res.ok) {
+      toast("Message scheduled!", "success");
+      document.getElementById("sched-num").value = "";
+      document.getElementById("sched-msg").value = "";
+      document.getElementById("sched-dt").value  = "";
+      loadSchedules(activeAppId);
+    } else { toast(data?.error || "Schedule failed", "error"); }
+  }
+
+  async function loadSchedules(appId) {
+    const res = await api(`/api/apps/${appId}/schedules`);
+    if (!res) return;
+    renderSchedules(await res.json());
+  }
+
+  function renderSchedules(list) {
+    const container = document.getElementById("sched-list");
+    if (!list.length) { container.innerHTML = '<p style="font-size:13px;color:#9ca3af;padding:8px 0">No scheduled messages.</p>'; return; }
+    container.innerHTML = list.map(s => `
+      <div class="sched-item">
+        <div class="sched-item-body">
+          <div class="sched-num">📱 +${esc(s.number)}</div>
+          <div class="sched-msg">${esc(s.message.length > 80 ? s.message.slice(0,80)+"…" : s.message)}</div>
+          <div class="sched-time">⏰ ${formatPKT(s.scheduledTime)}</div>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
+          <span class="sched-status ${s.status}">${s.status}</span>
+          ${s.status === "pending" ? `<button class="btn btn-sm btn-danger" onclick="cancelSchedule('${s.id}')">Cancel</button>` : ""}
+        </div>
+      </div>`).join("");
+  }
+
+  async function cancelSchedule(schedId) {
+    if (!confirm("Cancel this scheduled message?")) return;
+    const res = await api(`/api/apps/${activeAppId}/schedules/${schedId}`, { method: "DELETE" });
+    if (!res) return;
+    if (res.ok) { toast("Cancelled", "success"); loadSchedules(activeAppId); }
+    else toast("Cancel failed", "error");
+  }
+
+  // ── Tabs ───────────────────────────────────────────────────────────────────
+  function switchTab(btn) {
+    const tab = btn.dataset.tab;
+    activeTab = tab;
+    document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t === btn));
+    document.querySelectorAll(".tab-panel").forEach(p => p.classList.add("hidden"));
+    document.getElementById("tab-" + tab).classList.remove("hidden");
+    if (tab === "schedule"  && activeAppId) loadSchedules(activeAppId);
+    if (tab === "recurring" && activeAppId) loadRecurring(activeAppId);
+    if (tab === "schedule") document.getElementById("sched-dt").min = nowPKT();
+  }
+
+  // ── Socket ─────────────────────────────────────────────────────────────────
+  function subscribeApp(appId) {
+    const reg = (event, handler) => { appListeners[event] = handler; socket.on(event, handler); };
+    reg(`wa_status_${appId}`,        ({ status })       => updateStatus(appId, status, null));
+    reg(`wa_qr_${appId}`,            ({ qr })           => showQR(qr));
+    reg(`wa_authenticated_${appId}`, ()                 => {
+      const badge = document.getElementById("det-badge");
+      if (badge && activeAppId === appId) badge.textContent = "Authenticating…";
+    });
+    reg(`wa_ready_${appId}`,         ({ number })       => {
+      updateStatus(appId, "READY", number);
+      toast(`${apps.find(a=>a.id===appId)?.name || "App"} connected!`, "success");
+    });
+    reg(`wa_disconnected_${appId}`,  ()                 => updateStatus(appId, "DISCONNECTED", null));
+    reg(`wa_error_${appId}`,         ()                 => updateStatus(appId, "DISCONNECTED", null));
+    reg(`schedule_fired_${appId}`,   ()                 => {
+      if (activeAppId === appId && activeTab === "schedule") loadSchedules(appId);
+      toast("Scheduled message sent!", "success");
+    });
+    reg(`recurring_fired_${appId}`,  ()                 => {
+      if (activeAppId === appId && activeTab === "recurring") loadRecurring(appId);
+      toast("Recurring message sent!", "success");
+    });
+  }
+
+  function unsubscribeActive() {
+    for (const [event, handler] of Object.entries(appListeners)) socket.off(event, handler);
+    appListeners = {};
+  }
+
+  function showQR(qrDataUrl) {
+    if (!activeAppId) return;
+    updateStatus(activeAppId, "INITIALIZING", null);
+    const wrap    = document.getElementById("qr-wrap");
+    const spinner = document.getElementById("qr-spinner");
+    if (spinner) spinner.style.display = "none";
+    let img = document.getElementById("qr-img");
+    if (!img) { img = document.createElement("img"); img.id = "qr-img"; wrap.appendChild(img); }
+    img.src = qrDataUrl;
+  }
+
+  // ── Sidebar ────────────────────────────────────────────────────────────────
+  function renderSidebar() {
+    const list = document.getElementById("app-list");
+    if (!apps.length) { list.innerHTML = '<p class="sidebar-empty">No apps yet.<br>Click + New to create one.</p>'; return; }
+    list.innerHTML = apps.map(a => `
+      <div class="app-item${activeAppId === a.id ? " active" : ""}" data-id="${a.id}" onclick="openApp('${a.id}')">
+        <div class="app-dot ${(a.status || "disconnected").toLowerCase()}"></div>
+        <div class="app-item-info">
+          <div class="app-item-name">${esc(a.name)}</div>
+          <div class="app-item-status">${statusLabel(a.status)}</div>
+          ${currentUser?.role === "admin" ? `<div class="app-item-owner">${esc(a.ownerName || a.owner || "")}</div>` : ""}
+        </div>
+      </div>`).join("");
+  }
+
+  // ── Admin — Users ──────────────────────────────────────────────────────────
+  let editingUsername = null;
+
+  async function loadUsers() {
+    const res = await api("/api/admin/users");
+    if (!res) return;
+    renderUsers(await res.json());
+  }
+
+  function renderUsers(list) {
+    const tbody = document.getElementById("users-tbody");
+    tbody.innerHTML = list.map(u => `
+      <tr>
+        <td>
+          <strong>${esc(u.name)}</strong><br>
+          <span style="font-size:11px;color:var(--muted)">@${esc(u.username)}</span>
+        </td>
+        <td>${esc(u.email)}</td>
+        <td><span class="badge ${u.role === "admin" ? "badge-admin" : "badge-user"}" style="font-size:11px">${u.role}</span></td>
+        <td>${u.appCount}</td>
+        <td style="font-size:11px;color:var(--muted)">${new Date(u.createdAt).toLocaleDateString()}</td>
+        <td>
+          <div class="td-actions">
+            <button class="btn btn-sm btn-ghost" onclick="showUserModal('${esc(u.username)}')">Edit</button>
+            ${u.username !== currentUser.username
+              ? `<button class="btn btn-sm btn-danger" onclick="deleteUser('${esc(u.username)}')">Delete</button>`
+              : `<span style="font-size:11px;color:var(--muted);padding:0 4px">You</span>`}
+          </div>
+        </td>
+      </tr>`).join("");
+  }
+
+  async function showUserModal(username) {
+    editingUsername = username || null;
+    document.getElementById("user-modal-title").textContent = username ? "Edit User" : "Add User";
+    document.getElementById("um-save-btn").textContent      = username ? "Update" : "Add User";
+    document.getElementById("um-pass-label").textContent    = username ? "New Password (leave blank to keep)" : "Password";
+
+    document.getElementById("um-name").value  = "";
+    document.getElementById("um-user").value  = "";
+    document.getElementById("um-email").value = "";
+    document.getElementById("um-pass").value  = "";
+    document.getElementById("um-role").value  = "user";
+
+    if (username) {
+      const res  = await api("/api/admin/users");
+      if (!res) return;
+      const list = await res.json();
+      const u    = list.find(x => x.username === username);
+      if (u) {
+        document.getElementById("um-name").value  = u.name;
+        document.getElementById("um-user").value  = u.username;
+        document.getElementById("um-email").value = u.email;
+        document.getElementById("um-role").value  = u.role;
+      }
+      document.getElementById("um-user").disabled = true;
+    } else {
+      document.getElementById("um-user").disabled = false;
+    }
+
+    document.getElementById("modal-user").classList.remove("hidden");
+  }
+
+  async function saveUser() {
+    const name     = document.getElementById("um-name").value.trim();
+    const username = document.getElementById("um-user").value.trim();
+    const email    = document.getElementById("um-email").value.trim();
+    const password = document.getElementById("um-pass").value;
+    const role     = document.getElementById("um-role").value;
+
+    if (editingUsername) {
+      const body = { name, email, role };
+      if (password) body.password = password;
+      const res = await api(`/api/admin/users/${editingUsername}`, { method: "PUT", body });
+      if (!res) return;
+      const data = await res.json();
+      if (!res.ok) { toast(data.error || "Update failed", "error"); return; }
+      toast("User updated", "success");
+    } else {
+      if (!name || !username || !email || !password) { toast("All fields required", "error"); return; }
+      const res = await api("/api/admin/users", { method: "POST", body: { name, username, email, password, role } });
+      if (!res) return;
+      const data = await res.json();
+      if (!res.ok) { toast(data.error || "Create failed", "error"); return; }
+      toast("User created", "success");
+    }
+
+    hideModal("modal-user");
+    loadUsers();
+  }
+
+  async function deleteUser(username) {
+    if (!confirm(`Delete user "${username}" and all their apps? This cannot be undone.`)) return;
+    const res = await api(`/api/admin/users/${username}`, { method: "DELETE" });
+    if (!res) return;
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || "Delete failed", "error"); return; }
+    toast("User deleted", "success");
+    loadUsers();
+    loadApps();
+  }
+
+  // ── Recurring ──────────────────────────────────────────────────────────────
+  let editingRecId = null;
+
+  function showRecurringModal(rec) {
+    editingRecId = rec ? rec.id : null;
+    document.getElementById("rec-modal-title").textContent = rec ? "Edit Recurring Schedule" : "New Recurring Schedule";
+    document.getElementById("rec-save-btn").textContent    = rec ? "Update" : "Save";
+    populateHourSelects();
+    populateWindowSelects();
+    const freq = rec?.frequency || "every_n_minutes";
+    document.getElementById("rec-freq").value     = freq;
+    document.getElementById("rec-interval").value = rec?.intervalMinutes || 30;
+    const h24 = rec?.timeHour ?? 9;
+    document.getElementById("rec-hour").value     = String(h24 % 12 || 12);
+    document.getElementById("rec-minute").value   = String(rec?.timeMinute ?? 0).padStart(2, "0");
+    document.getElementById("rec-ampm").value     = h24 < 12 ? "AM" : "PM";
+    document.getElementById("rec-weekday").value  = String(rec?.weekday ?? 1);
+    document.getElementById("rec-win-start").value = rec?.windowStart || "08:00";
+    document.getElementById("rec-win-end").value   = rec?.windowEnd   || "22:00";
+    document.getElementById("rec-recipients").value = rec?.recipients
+      ? rec.recipients.map(r => `${r.number} | ${r.message}`).join("\n") : "";
+    onFreqChange();
+    document.getElementById("modal-rec").classList.remove("hidden");
+  }
+
+  function populateHourSelects() {
+    const el = document.getElementById("rec-hour");
+    if (el.options.length) return;
+    for (let h = 1; h <= 12; h++) el.add(new Option(String(h), String(h)));
+    const min = document.getElementById("rec-minute");
+    if (min.options.length) return;
+    for (let m = 0; m < 60; m += 5) min.add(new Option(String(m).padStart(2,"0"), String(m).padStart(2,"0")));
+  }
+
+  function populateWindowSelects() {
+    const starts = document.getElementById("rec-win-start");
+    const ends   = document.getElementById("rec-win-end");
+    if (starts.options.length) return;
+    for (let h = 0; h < 24; h++) {
+      for (let m = 0; m < 60; m += 30) {
+        const val  = `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}`;
+        const h12  = h % 12 || 12; const ampm = h < 12 ? "AM" : "PM";
+        const lbl  = `${h12}:${String(m).padStart(2,"0")} ${ampm}`;
+        starts.add(new Option(lbl, val));
+        ends.add(new Option(lbl, val));
+      }
+    }
+  }
+
+  function onFreqChange() {
+    const freq = document.getElementById("rec-freq").value;
+    document.getElementById("rec-interval-row").classList.toggle("hidden", freq !== "every_n_minutes");
+    document.getElementById("rec-time-row").classList.toggle("hidden",     freq !== "daily" && freq !== "weekly");
+    document.getElementById("rec-weekday-row").classList.toggle("hidden",  freq !== "weekly");
+    document.getElementById("rec-window-row").classList.toggle("hidden",   freq === "daily" || freq === "weekly");
+  }
+
+  async function saveRecurring() {
+    const freq   = document.getElementById("rec-freq").value;
+    const rawH   = Number(document.getElementById("rec-hour").value);
+    const rawM   = Number(document.getElementById("rec-minute").value);
+    const ampm   = document.getElementById("rec-ampm").value;
+    const hour24 = ampm === "PM" ? (rawH === 12 ? 12 : rawH + 12) : (rawH === 12 ? 0 : rawH);
+
+    const lines = document.getElementById("rec-recipients").value.trim().split("\n").map(l => l.trim()).filter(Boolean);
+    if (!lines.length) return toast("Add at least one recipient", "error");
+    const recipients = [];
+    for (const line of lines) {
+      const pipe = line.indexOf("|");
+      if (pipe === -1) return toast(`Missing | in: "${line}"`, "error");
+      const number  = line.slice(0, pipe).trim().replace(/\D/g, "");
+      const message = line.slice(pipe + 1).trim();
+      if (!number || !message) return toast(`Bad format: "${line}"`, "error");
+      recipients.push({ number, message });
+    }
+
+    const body = {
+      frequency: freq,
+      intervalMinutes: Number(document.getElementById("rec-interval").value),
+      timeHour: hour24, timeMinute: rawM,
+      weekday: Number(document.getElementById("rec-weekday").value),
+      windowStart: document.getElementById("rec-win-start").value,
+      windowEnd:   document.getElementById("rec-win-end").value,
+      recipients,
+    };
+
+    const url    = editingRecId ? `/api/apps/${activeAppId}/recurring/${editingRecId}` : `/api/apps/${activeAppId}/recurring`;
+    const method = editingRecId ? "PUT" : "POST";
+    const res    = await api(url, { method, body });
+    if (!res) return;
+    const data = await res.json();
+    if (!res.ok) return toast(data.error || "Save failed", "error");
+    hideModal("modal-rec");
+    toast(editingRecId ? "Schedule updated!" : "Recurring schedule created!", "success");
+    loadRecurring(activeAppId);
+  }
+
+  async function loadRecurring(appId) {
+    const res = await api(`/api/apps/${appId}/recurring`);
+    if (!res) return;
+    renderRecurring(await res.json());
+  }
+
+  function renderRecurring(list) {
+    const container = document.getElementById("rec-list");
+    if (!list.length) { container.innerHTML = '<p style="font-size:13px;color:#9ca3af">No recurring schedules yet.</p>'; return; }
+    container.innerHTML = list.map(rec => {
+      const statusClass = rec.status === "active" ? "badge-active" : "badge-paused";
+      const nextTxt     = rec.nextFireAt ? "Next: " + formatPKTfull(rec.nextFireAt) : "";
+      const recipRows   = rec.recipients.map(r =>
+        `<div class="rec-recipient-row">
+          <span class="rec-rec-num">+${esc(r.number)}</span>
+          <span class="rec-rec-msg">${esc(r.message.length > 60 ? r.message.slice(0,60)+"…" : r.message)}</span>
+        </div>`).join("");
+      const logs = (rec.logs || []).slice(0, 5).map(log => {
+        const results = log.results.map(r =>
+          r.status === "sent"
+            ? `<span class="rec-log-ok">✓ +${esc(r.number)}</span>`
+            : `<span class="rec-log-fail">✗ +${esc(r.number)}: ${esc(r.error||"failed")}</span>`
+        ).join(" &nbsp;");
+        return `<div class="rec-log-entry"><div class="rec-log-time">${formatPKTfull(log.firedAt)}</div>${results}</div>`;
+      }).join("");
+      return `
+        <div class="rec-item" id="rec-item-${rec.id}">
+          <div class="rec-item-head">
+            <div>
+              <div class="rec-item-title">
+                <span class="badge ${statusClass}" style="font-size:11px;padding:2px 8px;margin-right:6px">${rec.status}</span>
+                ${esc(freqLabel(rec))}
+              </div>
+              <div class="rec-item-freq">Window: ${fmtWindow(rec)}</div>
+              ${nextTxt ? `<div class="rec-item-next">${esc(nextTxt)}</div>` : ""}
+            </div>
+            <div class="rec-item-actions">
+              <button type="button" class="btn btn-sm btn-ghost" onclick="toggleRecurring('${rec.id}','${rec.status}')">
+                ${rec.status === "active" ? "Pause" : "Resume"}
+              </button>
+              <button type="button" class="btn btn-sm btn-ghost" onclick="editRecurring('${rec.id}')">Edit</button>
+              <button type="button" class="btn btn-sm btn-danger" onclick="deleteRecurring('${rec.id}')">Delete</button>
+            </div>
+          </div>
+          <div class="rec-recipients">${recipRows}</div>
+          ${logs ? `<div class="rec-logs">
+            <div class="rec-log-hd" onclick="toggleLogs('${rec.id}')">&#9660; Recent logs</div>
+            <div id="rec-logs-${rec.id}">${logs}</div>
+          </div>` : ""}
+        </div>`;
+    }).join("");
+  }
+
+  function toggleLogs(recId) { document.getElementById(`rec-logs-${recId}`)?.classList.toggle("hidden"); }
+
+  async function toggleRecurring(recId, currentStatus) {
+    const status = currentStatus === "active" ? "paused" : "active";
+    const res = await api(`/api/apps/${activeAppId}/recurring/${recId}`, { method: "PUT", body: { status } });
+    if (!res) return;
+    if (res.ok) { toast(status === "active" ? "Resumed" : "Paused", "success"); loadRecurring(activeAppId); }
+    else toast("Failed", "error");
+  }
+
+  async function editRecurring(recId) {
+    const res = await api(`/api/apps/${activeAppId}/recurring`);
+    if (!res) return;
+    const list = await res.json();
+    const rec  = list.find(r => r.id === recId);
+    if (rec) showRecurringModal(rec);
+  }
+
+  async function deleteRecurring(recId) {
+    if (!confirm("Delete this recurring schedule?")) return;
+    const res = await api(`/api/apps/${activeAppId}/recurring/${recId}`, { method: "DELETE" });
+    if (!res) return;
+    if (res.ok) { toast("Deleted", "success"); loadRecurring(activeAppId); }
+    else toast("Delete failed", "error");
+  }
+
+  function freqLabel(rec) {
+    if (rec.frequency === "every_n_minutes") return `Every ${rec.intervalMinutes} min`;
+    if (rec.frequency === "hourly")          return "Every hour";
+    if (rec.frequency === "daily") {
+      const h = rec.timeHour; const m = String(rec.timeMinute).padStart(2,"0");
+      return `Daily at ${h%12||12}:${m} ${h<12?"AM":"PM"} PKT`;
+    }
+    if (rec.frequency === "weekly") {
+      const days = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+      const h = rec.timeHour; const m = String(rec.timeMinute).padStart(2,"0");
+      return `Weekly on ${days[rec.weekday]} at ${h%12||12}:${m} ${h<12?"AM":"PM"} PKT`;
+    }
+    return rec.frequency;
+  }
+
+  function fmtWindow(rec) {
+    if (rec.frequency === "daily" || rec.frequency === "weekly") return "All day";
+    const fmt = t => { const [h,m] = t.split(":").map(Number); return `${h%12||12}:${String(m).padStart(2,"0")} ${h<12?"AM":"PM"}`; };
+    return `${fmt(rec.windowStart)} – ${fmt(rec.windowEnd)} PKT`;
+  }
+
+  // ── Utilities ──────────────────────────────────────────────────────────────
+  function statusLabel(s) {
+    return { DISCONNECTED: "Disconnected", INITIALIZING: "Connecting…", READY: "Connected" }[s] || "Disconnected";
+  }
+
+  function esc(str) {
+    return String(str).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  }
+
+  function formatPKT(localStr) {
+    const [datePart, timePart] = localStr.split("T");
+    const [y, mo, d]           = datePart.split("-").map(Number);
+    const [h, m]               = timePart.split(":").map(Number);
+    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    return `${months[mo-1]} ${d}, ${y}  ${h%12||12}:${String(m).padStart(2,"0")} ${h<12?"AM":"PM"} PKT`;
+  }
+
+  function formatPKTfull(isoStr) {
+    const d   = new Date(isoStr);
+    const pk  = new Date(d.getTime() + 5 * 3600000);
+    const pad = n => String(n).padStart(2,"0");
+    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const h   = pk.getUTCHours();
+    return `${months[pk.getUTCMonth()]} ${pk.getUTCDate()}, ${pk.getUTCFullYear()} ${h%12||12}:${pad(pk.getUTCMinutes())} ${h<12?"AM":"PM"} PKT`;
+  }
+
+  function nowPKT() {
+    const pk  = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Karachi" }));
+    const pad = n => String(n).padStart(2, "0");
+    return `${pk.getFullYear()}-${pad(pk.getMonth()+1)}-${pad(pk.getDate())}T${pad(pk.getHours())}:${pad(pk.getMinutes())}`;
+  }
+
+  async function copyEl(elId) {
+    try { await navigator.clipboard.writeText(document.getElementById(elId).textContent.trim()); toast("Copied!", "success"); }
+    catch { toast("Copy failed", "error"); }
+  }
+
+  function hideModal(id) { document.getElementById(id).classList.add("hidden"); }
+  function onModalOverlay(e, id) { if (e.target === document.getElementById(id)) hideModal(id); }
+
+  let toastTimer;
+  function toast(msg, type = "") {
+    const el = document.getElementById("toast");
+    el.textContent = msg; el.className = "show " + type;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.className = "", 3000);
+  }
+
+  // ── Boot ───────────────────────────────────────────────────────────────────
+  (function boot() {
+    const saved = localStorage.getItem("wa_user_str");
+    if (saved && authToken) {
+      try { currentUser = JSON.parse(saved); showDashboard(); return; } catch {}
+    }
+    showLogin();
+  })();
+</script>
+</body>
+</html>
